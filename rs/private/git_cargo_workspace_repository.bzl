@@ -6,18 +6,11 @@ load(":toml2json.bzl", "run_toml2json")
 def _render_label_list(labels):
     return ",\n        ".join(['"%s"' % label for label in sorted(labels)])
 
-def _spoke_repo(hub_name, name, version):
-    s = "%s__%s-%s" % (hub_name, name, version)
-    if "+" in s:
-        s = s.replace("+", "-")
-    return s
-
 def _render_build_file(rctx, dest, additive_build_file_content, gen_binaries, workspace_cargo_toml):
     package_path = rctx.path(dest).dirname
     cargo_toml_path = package_path.get_child("Cargo.toml")
     cargo_toml = run_toml2json(rctx, cargo_toml_path)
     cargo_toml = inherit_workspace_package_fields(cargo_toml, workspace_cargo_toml)
-    package = cargo_toml["package"]
 
     cargo = cargo_build_file_values(
         rctx,
@@ -46,7 +39,7 @@ crate(
     ],
 )
 {additive_build_file_content}{package_metadata_bazel_additive_build_file_content}""".format(
-        crate_bzl = "@%s//:crate.bzl" % _spoke_repo(rctx.attr.hub_name, package["name"], package["version"]),
+        crate_bzl = "@%s//:crate.bzl" % rctx.attr.crate_repositories[dest],
         crate_name = cargo.values["crate_name"],
         crate_root = cargo.values["crate_root"],
         edition = cargo.values["edition"],
@@ -81,6 +74,7 @@ git_cargo_workspace_repository = repository_rule(
         "shallow_since": attr.string(),
         "init_submodules": attr.bool(default = True),
         "build_files": attr.string_dict(mandatory = True),
+        "crate_repositories": attr.string_dict(mandatory = True),
         "gen_binaries": attr.string_list_dict(default = {}),
         "workspace_cargo_toml": attr.string(default = "Cargo.toml"),
         "patch_args": attr.string_list(default = []),

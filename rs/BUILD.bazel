@@ -67,6 +67,7 @@ bzl_library(
     deps = [
         "//rs/private:annotations",
         "//rs/private:cargo_credentials",
+        "//rs/private:cargo_package_identity",
         "//rs/private:cargo_workspace_graph",
         "//rs/private:crate_repository",
         "//rs/private:downloader",

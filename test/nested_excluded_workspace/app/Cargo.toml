@@ -1,0 +1,8 @@
+[package]
+name = "nested-workspace-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bridge = { path = "../vendor/inner/rs/bridge" }
+registry_itoa = { package = "itoa", version = "=1.0.15" }

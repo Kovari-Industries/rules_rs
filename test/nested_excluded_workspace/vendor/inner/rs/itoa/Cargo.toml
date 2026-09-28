@@ -1,0 +1,9 @@
+[package]
+name = "itoa"
+version.workspace = true
+edition.workspace = true
+
+[features]
+inherited-feature = []
+build-feature = []
+target-feature = []

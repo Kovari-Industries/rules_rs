@@ -3,9 +3,12 @@ load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@host_cargo//:defs.bzl", "RS_HOST_CARGO_LABEL")
 load("//rs/private:annotations.bzl", "annotation_for", "build_annotation_map", "well_known_annotation_snippet_paths")
 load("//rs/private:cargo_credentials.bzl", "load_cargo_credentials")
+load("//rs/private:cargo_package_identity.bzl", "assign_package_ids", "package_fq", "package_spoke", "registry_fact_key")
 load(
     "//rs/private:cargo_workspace_graph.bzl",
+    "cargo_metadata_dep_to_dep_dict",
     "cargo_toml_fact",
+    "discover_local_packages",
     "platform_label",
     "render_dep_data",
     "render_string_list",
@@ -13,7 +16,7 @@ load(
     "resolve_package_facts",
     "split_lockfile_packages",
     "workspace_dep_data",
-    _fq_crate = "fq_crate",
+    "workspace_metadata_packages",
     _manifest_package_dir = "manifest_package_dir",
     _normalize_path = "normalize_path",
     _select = "select_items",
@@ -27,12 +30,6 @@ load("//rs/private:registry_config_repository.bzl", "registry_config_repository"
 load("//rs/private:registry_utils.bzl", "CRATES_IO_REGISTRY", "registry_config_repo_name", "resolve_registry_source")
 load("//rs/private:repository_utils.bzl", "render_select")
 load("//rs/private:toml2json.bzl", "run_toml2json")
-
-def _spoke_repo(hub_name, name, version):
-    s = "%s__%s-%s" % (hub_name, name, version)
-    if "+" in s:
-        s = s.replace("+", "-")
-    return s
 
 def _git_repo_remote_name(remote):
     scheme_separator = remote.find("://")
@@ -105,6 +102,20 @@ def _additive_build_file_content(mctx, annotation):
     content += annotation.additive_build_file_content
     return content
 
+def _read_local_metadata(mctx, cargo_path, manifest, cargo_config):
+    result = mctx.execute(
+        [cargo_path, "metadata", "--no-deps", "--locked", "--offline", "--format-version=1", "--quiet", "--manifest-path", str(manifest)] +
+        (["--config", str(mctx.path(cargo_config))] if cargo_config else []),
+        working_directory = str(mctx.path(manifest).dirname),
+    )
+    if result.return_code != 0:
+        fail(result.stdout + "\n" + result.stderr)
+    metadata = json.decode(result.stdout)
+    mctx.watch(mctx.path(paths.join(metadata["workspace_root"], "Cargo.toml")))
+    for package in metadata["packages"]:
+        mctx.watch(mctx.path(package["manifest_path"]))
+    return metadata
+
 def _generate_hub_and_spokes(
         mctx,
         hub_name,
@@ -144,14 +155,13 @@ def _generate_hub_and_spokes(
     _date(mctx, "start")
 
     mctx.report_progress("Reading workspace metadata")
-    result = mctx.execute(
-        [cargo_path, "metadata", "--no-deps", "--locked", "--format-version=1", "--quiet"] +
-        (["--config", str(mctx.path(cargo_config))] if cargo_config else []),
-        working_directory = str(mctx.path(cargo_lock_path).dirname),
+    cargo_metadata = _read_local_metadata(mctx, cargo_path, mctx.path(cargo_lock_path).dirname.get_child("Cargo.toml"), cargo_config)
+    local_packages = discover_local_packages(
+        cargo_metadata,
+        workspace_cargo_toml_json,
+        all_packages,
+        lambda manifest: _read_local_metadata(mctx, cargo_path, manifest, cargo_config),
     )
-    if result.return_code != 0:
-        fail(result.stdout + "\n" + result.stderr)
-    cargo_metadata = json.decode(result.stdout)
 
     _date(mctx, "parsed cargo metadata")
 
@@ -163,6 +173,7 @@ def _generate_hub_and_spokes(
         cargo_metadata,
         workspace_cargo_toml_json,
         all_packages,
+        local_packages = local_packages,
     )
     packages = split_packages.packages
     workspace_members = split_packages.workspace_members
@@ -176,7 +187,7 @@ def _generate_hub_and_spokes(
         source = package["source"]
 
         if source.startswith("sparse+"):
-            key = name + "_" + version
+            key = registry_fact_key(package)
             fact = existing_facts.get(key)
             if fact:
                 facts[key] = fact
@@ -185,7 +196,7 @@ def _generate_hub_and_spokes(
                 package["download_token"].wait()
 
                 # TODO(zbarsky): Should we also dedupe this parsing?
-                for line in mctx.read(name + ".jsonl").strip().split("\n"):
+                for line in mctx.read(package["registry_metadata_path"]).strip().split("\n"):
                     if version not in line:
                         continue
                     metadata = json.decode(line)
@@ -229,13 +240,11 @@ def _generate_hub_and_spokes(
             # dependencies without changing Cargo.lock, causing stale resolution.
             # Do not return path dependency facts for storage in MODULE.bazel.lock.
             # Watch Cargo.toml so Bazel re-runs the extension when Cargo.toml changes.
-            cargo_toml_path = paths.join(package["local_path"], "Cargo.toml")
-            mctx.watch(mctx.path(cargo_toml_path))
-            annotation = annotation_for(annotations, name, package["version"], hub_name)
-            cargo_toml_json = run_toml2json(mctx, cargo_toml_path)
-            fact = cargo_toml_fact(cargo_toml_json, {})
-
-            package["strip_prefix"] = fact.get("strip_prefix", "")
+            metadata = package["local_metadata"]
+            fact = dict(
+                features = metadata.get("features", {}),
+                dependencies = [cargo_metadata_dep_to_dep_dict(dep) for dep in metadata.get("dependencies", [])],
+            )
         elif source.startswith("git+"):
             key = source + "_" + name
             fact = existing_facts.get(key)
@@ -268,7 +277,7 @@ def _generate_hub_and_spokes(
         else:
             fail("Unknown source %s for crate %s" % (source, name))
 
-        facts_by_fq_crate[_fq_crate(name, version)] = fact
+        facts_by_fq_crate[package_fq(package)] = fact
 
     resolved_facts = resolve_package_facts(packages, facts_by_fq_crate, platform_triples)
     feature_resolutions_by_fq_crate = resolved_facts.feature_resolutions_by_fq_crate
@@ -309,7 +318,7 @@ def _generate_hub_and_spokes(
         version = package["version"]
         source = package["source"]
 
-        feature_resolutions = feature_resolutions_by_fq_crate[_fq_crate(crate_name, version)]
+        feature_resolutions = feature_resolutions_by_fq_crate[package_fq(package)]
 
         annotation = annotation_for(annotations, crate_name, version, hub_name)
         suggested_annotation = None
@@ -367,7 +376,7 @@ crate.annotation(
             use_legacy_rules_rust_platforms = use_legacy_rules_rust_platforms,
         )
 
-        repo_name = _spoke_repo(hub_name, crate_name, version)
+        repo_name = package_spoke(hub_name, package)
         package["target_repo_name"] = repo_name
         package["target_package_path"] = ""
 
@@ -414,6 +423,7 @@ crate.annotation(
                 patch_tool = annotation.patch_tool,
                 patches = annotation.patches,
                 path = package["local_path"],
+                workspace_cargo_toml = package["workspace_manifest"],
                 **kwargs
             )
         elif source.startswith("git+"):
@@ -441,7 +451,7 @@ crate.annotation(
     mctx.report_progress("Initializing hub")
 
     package_by_fq = {
-        _fq_crate(package["name"], package["version"]): package
+        package_fq(package): package
         for package in packages
     }
     repo_root = _normalize_path(cargo_metadata["workspace_root"])
@@ -477,70 +487,59 @@ crate.annotation(
                 ))
 
     hub_contents = []
-    for name, versions in versions_by_name.items():
-        for version in versions:
-            annotation = annotation_for(annotations, name, version, hub_name)
-            package = package_by_fq[_fq_crate(name, version)]
-            target_repo_name = package["target_repo_name"]
-            target_package_path = package["target_package_path"]
-
+    for package in packages:
+        name = package["name"]
+        version = package["version"]
+        fq = package_fq(package)
+        suffix = fq[len(name):]
+        annotation = annotation_for(annotations, name, version, hub_name)
+        target_repo_name = package["target_repo_name"]
+        target_package_path = package["target_package_path"]
+        hub_contents.append("""
+alias(
+    name = "{fq}",
+    actual = "{actual}",
+)""".format(fq = fq, actual = _target_label(target_repo_name, target_package_path, name)))
+        for binary in annotation.gen_binaries:
             hub_contents.append("""
 alias(
-    name = "{name}-{version}",
+    name = "{fq}__{binary}",
     actual = "{actual}",
-)""".format(name = name, version = version, actual = _target_label(target_repo_name, target_package_path, name)))
-
-            for binary in annotation.gen_binaries:
-                hub_contents.append("""
-alias(
-    name = "{name}-{version}__{binary}",
-    actual = "{actual}",
-)""".format(name = name, version = version, binary = binary, actual = _target_label(target_repo_name, target_package_path, binary + "__bin")))
-
-            for alias_name, target in sorted(annotation.extra_aliased_targets.items()):
-                hub_contents.append("""
-alias(
-    name = "{alias_name}-{version}",
-    actual = "{actual}",
-)""".format(
-                    alias_name = alias_name,
-                    version = version,
-                    actual = _target_label(target_repo_name, target_package_path, target),
-                ))
-
-        workspace_versions = workspace_dep_versions_by_name.get(name)
-        if workspace_versions:
-            fq = sorted(workspace_versions)[-1]
-            default_version = fq[len(name) + 1:]
-            annotation = annotation_for(annotations, name, default_version, hub_name)
-
+)""".format(fq = fq, binary = binary, actual = _target_label(target_repo_name, target_package_path, binary + "__bin")))
+        for alias_name, target in sorted(annotation.extra_aliased_targets.items()):
             hub_contents.append("""
+alias(
+    name = "{alias_name}{suffix}",
+    actual = "{actual}",
+)""".format(alias_name = alias_name, suffix = suffix, actual = _target_label(target_repo_name, target_package_path, target)))
+            if len([p for p in packages if p["name"] == name]) == 1:
+                hub_contents.append("""
+alias(
+    name = "{alias_name}",
+    actual = ":{alias_name}{suffix}",
+)""".format(alias_name = alias_name, suffix = suffix))
+
+    for name, candidates in workspace_dep_versions_by_name.items():
+        # A convenience alias must never arbitrarily choose between sources.
+        # Per-package deps always use the exact, versioned identity label.
+        if len(candidates) != 1:
+            continue
+        fq = list(candidates)[0]
+        package = package_by_fq[fq]
+        annotation = annotation_for(annotations, package["name"], package["version"], hub_name)
+        hub_contents.append("""
 alias(
     name = "{name}",
     actual = ":{fq}",
 )""".format(name = name, fq = fq))
-
-            for binary in annotation.gen_binaries:
-                hub_contents.append("""
+        for binary in annotation.gen_binaries:
+            hub_contents.append("""
 alias(
     name = "{name}__{binary}",
     actual = ":{fq}__{binary}",
 )""".format(name = name, fq = fq, binary = binary))
 
-        if len(versions) == 1:
-            version = versions[0]
-            annotation = annotation_for(annotations, name, version, hub_name)
-            for alias_name in sorted(annotation.extra_aliased_targets.keys()):
-                hub_contents.append("""
-alias(
-    name = "{alias_name}",
-    actual = ":{alias_name}-{version}",
-)""".format(
-                    alias_name = alias_name,
-                    version = version,
-                ))
-
-    for package in cargo_metadata["packages"]:
+    for package in workspace_metadata_packages(cargo_metadata):
         package_dir = _manifest_package_dir(package["manifest_path"], repo_root)
         bazel_package = paths.join(workspace_package, package_dir).removesuffix("/")
         if not bazel_package:
@@ -551,11 +550,10 @@ alias(
             continue
         hub_contents.append("""
 alias(
-    name = "{name}-{version}",
+    name = "{fq}",
     actual = "@@//{bazel_package}",
 )""".format(
-            name = package["name"],
-            version = package["version"],
+            fq = package_fq(package),
             bazel_package = bazel_package,
         ))
 
@@ -758,6 +756,7 @@ def _crate_impl(mctx):
             cargo_toml_by_hub_name[cfg.name] = run_toml2json(mctx, cfg.cargo_toml)
             cargo_lock = run_toml2json(mctx, cfg.cargo_lock)
             parsed_packages = cargo_lock.get("package", [])
+            assign_package_ids(parsed_packages)
             for package in parsed_packages:
                 package["hub_name"] = cfg.name
                 source = resolve_registry_source(package.get("source"), cargo_config)
@@ -847,6 +846,7 @@ def _crate_impl(mctx):
                 if not git_repo:
                     git_repo = {
                         "build_files": {},
+                        "crate_repositories": {},
                         "gen_binaries": {},
                         "commit": commit,
                         "hub_name": cfg.name,
@@ -871,6 +871,7 @@ def _crate_impl(mctx):
                     strip_prefix = json.decode(facts[source + "_" + package["name"]])["strip_prefix"]
                 package_path = _git_crate_package_path(annotation, strip_prefix)
                 build_file_path = paths.join(package_path, "BUILD.bazel") if package_path else "BUILD.bazel"
+                git_repo["crate_repositories"][build_file_path] = package_spoke(cfg.name, package)
                 git_repo["build_files"][build_file_path] = _additive_build_file_content(mctx, annotation)
                 if annotation.gen_binaries:
                     git_repo["gen_binaries"][build_file_path] = annotation.gen_binaries
@@ -894,6 +895,7 @@ def _crate_impl(mctx):
         git_cargo_workspace_repository(
             name = repo_name,
             build_files = git_repo["build_files"],
+            crate_repositories = git_repo["crate_repositories"],
             commit = git_repo["commit"],
             hub_name = git_repo["hub_name"],
             patch_args = git_repo["patch_args"],

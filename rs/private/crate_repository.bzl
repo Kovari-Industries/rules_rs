@@ -2,7 +2,7 @@ load("@bazel_tools//tools/build_defs/repo:cache.bzl", "get_default_canonical_id"
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "get_auth", "patch")
 load(":cargo_credentials.bzl", "load_cargo_credentials", "registry_auth_headers")
 load(":registry_utils.bzl", "registry_download_url_from_template")
-load(":repository_utils.bzl", "cargo_build_file_values", "common_attrs", "render_build_file_content")
+load(":repository_utils.bzl", "cargo_build_file_values", "common_attrs", "inherit_workspace_package_fields", "render_build_file_content")
 load(":toml2json.bzl", "run_toml2json")
 
 def _cargo_purl(package_name, version, qualifiers = {}):
@@ -94,6 +94,10 @@ def _local_crate_repository_impl(rctx):
 
     cargo_toml = run_toml2json(rctx, "Cargo.toml")
 
+    if rctx.attr.workspace_cargo_toml:
+        workspace = run_toml2json(rctx, rctx.attr.workspace_cargo_toml)
+        cargo_toml = inherit_workspace_package_fields(cargo_toml, workspace)
+
     rctx.file("BUILD.bazel", _generate_build_file(rctx, cargo_toml))
 
     # Symlinks into the main workspace get replanted by Bazel >= 9.0.1 as
@@ -109,5 +113,6 @@ local_crate_repository = repository_rule(
     implementation = _local_crate_repository_impl,
     attrs = {
         "path": attr.string(mandatory = True),
+        "workspace_cargo_toml": attr.string(),
     } | common_attrs,
 )

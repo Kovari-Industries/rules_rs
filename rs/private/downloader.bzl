@@ -1,6 +1,7 @@
 load("@bazel_tools//tools/build_defs/repo:git_worker.bzl", "git_repo")
 load(":annotations.bzl", "annotation_for")
 load(":cargo_credentials.bzl", "registry_auth_headers")
+load(":cargo_package_identity.bzl", "registry_fact_key", "source_suffix")
 load(":registry_utils.bzl", "CRATES_IO_REGISTRY", "sharded_path")
 load(":toml2json.bzl", "run_toml2json")
 
@@ -35,6 +36,7 @@ def _sanitize_path_fragment(path):
 def new_downloader_state():
     return struct(
         in_flight_registry_fetches_by_crate = {},
+        registry_sources_by_path = {},
         in_flight_git_crate_fetches_by_url = {},
         pending_git_clones_by_source = {},
     )
@@ -94,23 +96,28 @@ def start_crate_registry_downloads(
             source = CRATES_IO_REGISTRY
             package["source"] = source
         name = package["name"]
-        version = package["version"]
-
         if source.startswith("sparse+"):
-            key = name + "_" + version
+            key = registry_fact_key(package)
             if key in existing_facts:
                 continue
 
-            in_flight_fetch = state.in_flight_registry_fetches_by_crate.get(name)
+            metadata_path = name + source_suffix(source) + ".jsonl"
+            previous_source = state.registry_sources_by_path.get(metadata_path)
+            if previous_source != None and previous_source != source:
+                fail("Registry sources %s and %s produce the same metadata path" % (previous_source, source))
+            state.registry_sources_by_path[metadata_path] = source
+            package["registry_metadata_path"] = metadata_path
+            fetch_key = (source, name)
+            in_flight_fetch = state.in_flight_registry_fetches_by_crate.get(fetch_key)
             if not in_flight_fetch:
                 url = source.removeprefix("sparse+") + sharded_path(name.lower())
                 in_flight_fetch = mctx.download(
                     url,
-                    name + ".jsonl",
+                    metadata_path,
                     headers = registry_auth_headers(cargo_credentials, source),
                     block = False,
                 )
-                state.in_flight_registry_fetches_by_crate[name] = in_flight_fetch
+                state.in_flight_registry_fetches_by_crate[fetch_key] = in_flight_fetch
 
             package["download_token"] = in_flight_fetch
         elif source.startswith("git+"):

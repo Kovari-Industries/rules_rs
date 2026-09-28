@@ -1,0 +1,13 @@
+[package]
+name = "bridge"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+local_itoa.workspace = true
+
+[build-dependencies]
+local_itoa = { workspace = true, features = ["build-feature"] }
+
+[target.'cfg(unix)'.dependencies]
+local_itoa = { workspace = true, features = ["target-feature"] }

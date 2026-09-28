@@ -91,6 +91,7 @@ def _cargo_toml_dependencies_normalizes_dependency_specs_impl(ctx):
             "name": "alloc",
             "optional": False,
             "package": "rustc-std-workspace-alloc",
+            "path": "../rustc-std-workspace-alloc",
             "req": "1.0.0",
         },
         {
@@ -211,12 +212,14 @@ def _split_lockfile_packages_finds_local_package_paths_impl(ctx):
     ], got.workspace_members)
     asserts.equals(env, [
         {
+            "lock_source": "",
             "local_path": "/repo/crates/path-dep",
             "name": "path-dep",
             "source": "path+hub/crates/path-dep",
             "version": "1.0.0",
         },
         {
+            "lock_source": "",
             "local_path": "/repo/vendor/patched",
             "name": "patched-crate",
             "source": "path+hub/vendor/patched",

@@ -1,0 +1,13 @@
+load("@nested_excluded_workspace//:defs.bzl", "aliases", "all_crate_deps", "edition")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+
+rust_test(
+    name = "nested_excluded_workspace_test",
+    srcs = ["app/src/lib.rs"],
+    aliases = aliases(package_name = "app"),
+    edition = edition(package_name = "app"),
+    deps = all_crate_deps(
+        package_name = "app",
+        normal = True,
+    ),
+)

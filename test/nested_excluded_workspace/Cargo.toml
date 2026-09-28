@@ -1,0 +1,9 @@
+[workspace]
+members = ["app"]
+exclude = ["vendor/inner"]
+resolver = "2"
+
+# These values must not leak into the separate nested workspace.
+[workspace.package]
+version = "9.9.9"
+edition = "2015"

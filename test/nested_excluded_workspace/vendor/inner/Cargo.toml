@@ -1,0 +1,10 @@
+[workspace]
+members = ["rs/*"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.15"
+edition = "2021"
+
+[workspace.dependencies]
+local_itoa = { package = "itoa", path = "rs/itoa", features = ["inherited-feature"] }
