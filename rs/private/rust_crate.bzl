@@ -8,6 +8,7 @@ load("//rs:cargo_build_script.bzl", "cargo_build_script")
 load("//rs:rust_binary.bzl", "rust_binary")
 load("//rs:rust_library.bzl", "rust_library")
 load("//rs:rust_proc_macro.bzl", "rust_proc_macro")
+load(":runtime_assets.bzl", "crate_runtime_assets")
 
 def _platform(triple, use_legacy_rules_rust_platforms):
     if use_legacy_rules_rust_platforms:
@@ -180,6 +181,7 @@ def rust_crate(
         )
 
     if has_lib:
+        runtime_data, runtime_env = crate_runtime_assets(name, data, rustc_env)
         kwargs = dict(
             name = name,
             crate_name = crate_name,
@@ -188,14 +190,14 @@ def rust_crate(
             compile_data = compile_data,
             aliases = aliases,
             deps = deps,
-            data = data,
+            data = runtime_data,
             crate_features = crate_features + select(
                 {_platform(k, use_legacy_rules_rust_platforms): v for k, v in conditional_crate_features.items()} |
                 {"//conditions:default": []},
             ),
             crate_root = crate_root,
             edition = edition,
-            rustc_env = rustc_env,
+            rustc_env = runtime_env,
             rustc_env_files = ["cargo_toml_env_vars.env"],
             rustc_flags = rustc_flags + ["--cap-lints=allow"],
             tags = crate_tags,

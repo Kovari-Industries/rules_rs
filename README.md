@@ -18,6 +18,19 @@ Add `rules_rs` to `MODULE.bazel`:
 bazel_dep(name = "rules_rs", version = "0.0.33")
 ```
 
+## Vendored protoc build-script inputs
+
+The Cargo importer stages `bin/**` and `include/**` for the eight supported
+`protoc-bin-vendored-*` platform helpers. It adds those files to library
+runfiles and supplies a relocatable `CARGO_MANIFEST_DIR` for their Rust path
+APIs. Consumers do not need additive BUILD files, asset aliases, or per-platform
+annotations. Cargo still selects the versions and execution-host executable.
+
+This integration uses the build-script runner's `<runfiles>/m` working
+directory. It does not promise that these relative paths work from an arbitrary
+application working directory. Explicit annotation environment settings take
+precedence. Other packages, including `hiroz-codegen`, are unchanged.
+
 ## Paved Path
 
 This is the default setup for new users. It provisions the patched `rules_rust`, registers `rules_rs` Rust toolchains, sets explicit host platforms, and resolves Cargo dependencies against `rules_rs` platforms.
