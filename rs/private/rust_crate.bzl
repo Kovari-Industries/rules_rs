@@ -205,7 +205,8 @@ def rust_crate(
             package_metadata = [name + "_package_metadata"],
             skip_deps_verification = skip_deps_verification,
             visibility = ["//visibility:public"],
-            skip_per_crate_rustc_flags = True,
+            # per_crate_rustc_flag reaches these crates (paths under external/),
+            # so a build profile can optimize third-party code alone.
         )
 
         if is_proc_macro:
